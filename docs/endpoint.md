@@ -1,7 +1,7 @@
 # Private media endpoint
 
-A FastMCP server (loopback by default) that turns a natural-language brief into a
-validated image plan, submits the plan to the RunPod endpoint through the
+A FastMCP server (loopback by default) that turns a natural-language brief into
+a validated image plan, submits the plan to the RunPod endpoint through the
 existing packaged runner, and serves the validated artifact back over MCP or
 HTTP. One process owns one state directory and one generation worker.
 
@@ -45,17 +45,17 @@ export MEDIAGEN_JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_ur
 Generate a stable secret once and store it in the operator's secret manager;
 restarting the service with a different secret invalidates every issued token.
 
-The CLI does not load `.env` itself; source it first (`set -a; source .env;
-set +a`) or export the values. Exported serve settings are read only when the
-matching flag is absent, so `--host`, `--port`, `--model-id`,
-`--model-base-url`, `--model-api-key-env`,
-`--enable-generation`/`--disable-generation` always win. That holds even over
-an unparsable exported port or boolean; `--disable-generation` explicitly turns
-off an exported true, and `--enable-generation` turns it on when the export is
-absent or false. Empty or unset values fall back to the pinned defaults.
-`MEDIAGEN_ENABLE_GENERATION` accepts `true`/`1`/`yes`/`on` or
-`false`/`0`/`no`/`off`, case-insensitive after trimming whitespace; empty means
-false, and any other non-empty value stops startup with exit 2.
+The CLI does not load `.env` itself; source it first (`set -a; source .env; set +a`)
+or export the values. Exported serve settings are read only when the matching
+flag is absent, so `--host`, `--port`, `--model-id`, `--model-base-url`,
+`--model-api-key-env`, `--enable-generation`/`--disable-generation` always win.
+That holds even over an unparsable exported port or boolean;
+`--disable-generation` explicitly turns off an exported true, and
+`--enable-generation` turns it on when the export is absent or false. Empty or
+unset values fall back to the pinned defaults. `MEDIAGEN_ENABLE_GENERATION`
+accepts `true`/`1`/`yes`/`on` or `false`/`0`/`no`/`off`, case-insensitive after
+trimming whitespace; empty means false, and any other non-empty value stops
+startup with exit 2.
 
 ## Serve
 
@@ -71,10 +71,10 @@ Defaults: host `127.0.0.1`, port `8000`, MCP path `/mcp`, stateless Streamable
 HTTP, planning model `glm-5.3-flash` through `http://hades.home:8317/v1`, and
 generation **disabled**. `--host`, `--port`, `--model-id`, `--model-base-url`,
 `--model-api-key-env` and the generation flags override their exports; empty or
-unset exports fall back to the defaults. The host must be an IP literal
-(`127.0.0.1`, `::1`, a LAN address, or the wildcard `0.0.0.0` or `::`) or
-`localhost`; startup refuses anything else, including a non-numeric exported
-port or a malformed generation boolean.
+unset exports fall back to the defaults. The host must be an IP literal (`127.0.0.1`,
+`::1`, a LAN address, or the wildcard `0.0.0.0` or `::`) or `localhost`; startup
+refuses anything else, including a non-numeric exported port or a malformed
+generation boolean.
 
 The `--auth-secret-env`, `--issuer`, `--audience` and `--scope` flags must match
 the values used when minting tokens. Paid work needs generation enabled by
@@ -82,8 +82,8 @@ the values used when minting tokens. Paid work needs generation enabled by
 forces it off) **and** `RUNPOD_API_KEY` in the environment; without the key
 generation stays disabled.
 
-Reach a remote host through an SSH tunnel when the service stays on loopback;
-it does not terminate TLS:
+Reach a remote host through an SSH tunnel when the service stays on loopback; it
+does not terminate TLS:
 
 ```bash
 ssh -N -L 8000:127.0.0.1:8000 operator@media-host
@@ -112,13 +112,13 @@ the old one expires; there is no refresh endpoint.
 Rotate the shared secret by generating a new value, restarting the service with
 it, and reissuing every client token. Old tokens fail signature validation
 immediately. A token minted by another tool that omits `exp` is accepted by
-FastMCP 4.1.3 (it checks expiry only when present), so mint tokens only with this
-command.
+FastMCP 4.1.3 (it checks expiry only when present), so mint tokens only with
+this command.
 
 ## Client configuration
 
-Register the server as a Streamable HTTP MCP server at `http://127.0.0.1:8000/mcp`
-and send the token as a bearer header:
+Register the server as a Streamable HTTP MCP server at
+`http://127.0.0.1:8000/mcp` and send the token as a bearer header:
 
 ```json
 {
@@ -188,10 +188,11 @@ width, height, byte size and SHA-256. There are two retrieval paths:
 | `GET /artifacts/{job_id}/{artifact_id}` | Explicit bearer check with the same verifier | 64 MiB |
 
 The HTTP route is a custom route and does **not** inherit MCP auth; it verifies
-the token itself. It returns the stored MIME type, `X-Content-Type-Options:
-nosniff`, and `Cache-Control: no-store`. Reads are opaque database lookups,
-confined under `output/mediagen/<job_id>`, with no-follow and regular-file-only
-checks; the stored size and SHA-256 are rechecked on every read.
+the token itself. It returns the stored MIME type,
+`X-Content-Type-Options: nosniff`, and `Cache-Control: no-store`. Reads are
+opaque database lookups, confined under `output/mediagen/<job_id>`, with
+no-follow and regular-file-only checks; the stored size and SHA-256 are
+rechecked on every read.
 
 Files larger than 8 MiB must use HTTP. Both paths return `artifact_too_large`
 rather than truncating. Artifacts stay until the operator removes them; there is
@@ -241,20 +242,20 @@ Do not use `*` unless the port is already behind a trusted proxy.
 
 - Startup takes an exclusive lock on `<state-dir>/runtime.lock`, pins a
   content-addressed copy of only `manifest.json`, `endpoints.json`, `bin/`,
-  `workflows/` and `skills/`, opens SQLite schema version 2 (migrating a
-  version 1 database in place by adding the request, specs and diagnostics
-  columns), and marks any job left `running` as `needs_attention`.
+  `workflows/` and `skills/`, opens SQLite schema version 2 (migrating a version
+  1 database in place by adding the request, specs and diagnostics columns), and
+  marks any job left `running` as `needs_attention`.
 - The live package is read only at startup. Restart the service to serve edited
-  package files. Queued jobs load the snapshot named by their stored digest, so a
-  later package edit cannot change a submission already accepted. An exact retry
-  of an existing `request_id` is answered from the stored request text and specs
-  without planning again or consulting the live manifest.
+  package files. Queued jobs load the snapshot named by their stored digest, so
+  a later package edit cannot change a submission already accepted. An exact
+  retry of an existing `request_id` is answered from the stored request text and
+  specs without planning again or consulting the live manifest.
 - One planner runs at a time; `busy` is returned instead of queueing planners.
   One worker processes jobs. Twenty queued jobs is the admission bound.
 - A client disconnect does not cancel a paid generation; the worker is
-  independent of the HTTP request. A cancelled planner request keeps its
-  planner admission until the planning operation finishes; an idle thread-pool
-  thread does not hold shutdown open.
+  independent of the HTTP request. A cancelled planner request keeps its planner
+  admission until the planning operation finishes; an idle thread-pool thread
+  does not hold shutdown open.
 - Shutdown stops admission and claims, joins the worker and waits for any
   admitted planner operation within one shared shutdown bound, and only then
   releases the lock. The planner wait is on operation completion, not on the

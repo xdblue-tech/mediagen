@@ -52,7 +52,7 @@ steam and cedar scent of the bath house
 neon buzz, faint cigarette smoke
 warm paper-lamp glow, tatami scent
 chalk-dust light shafts, sunset through windows
-coffee aroma, keyboard clatter in the distance
+coffee aroma, keyboard clatter in the distance 
 leather smell, low AC hum
 salt wind, high-UV brightness
 petal drift, mossy stone coolness
