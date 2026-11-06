@@ -18,7 +18,8 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e .
 # the private MCP endpoint (FastMCP, Starlette, Uvicorn, joserfc):
 uv pip install --python .venv/bin/python -e '.[server]'
-# only for the live-eval CLI's default litellm backend (extra "litellm"):
+# only for live-eval with --model-backend litellm (extra "litellm",
+# not needed by the default inference-client backend):
 uv pip install --python .venv/bin/python -e '.[litellm]'
 ```
 
@@ -82,10 +83,10 @@ $PYTHON312 -m venv /tmp/da-venv
 Pillow and PyYAML are declared as direct dependencies because the package imports
 them (`vendor_smoke` decodes with Pillow, `agent` reads smolagents' YAML prompt).
 
-The base dependencies cover the offline tests and the `inference-client` live
-backend. The `litellm` extra is only needed for `--model-backend litellm`, which
-is the CLI default; the CLI preflights that import before the first paid call.
-The package needs no network at runtime and no vendor credential for tests.
+The base dependencies cover the offline tests and the default `inference-client`
+live backend. The `litellm` extra is only needed for `--model-backend litellm`;
+the CLI preflights that import before the first paid call. The package needs no
+network at runtime and no vendor credential for tests.
 
 ## Run
 
@@ -253,6 +254,22 @@ counter, and a call that outlives the remaining wall-clock budget is abandoned
 instead of blocking the run.
 
 ```bash
+# Default (inference-client): the serve endpoint's planning config. Resolution
+# is --model-id/--model-base-url/--api-key-env, then the exported
+# MEDIAGEN_MODEL_ID / MEDIAGEN_MODEL_BASE_URL / MEDIAGEN_MODEL_API_KEY_ENV,
+# then the serve defaults (glm-5.3-flash over the configured OpenAI-compatible
+# proxy). The proxy key is read from the named variable at run time — the CLI
+# does not load .env, so source or export it first. An empty --model-base-url
+# runs straight against Hugging Face instead. No default provider is chosen for
+# the litellm backend: pass --model-id there explicitly.
+set -a; source .env; set +a
+.venv/bin/python -m distribute_agent live-eval --enable-live-model \
+  --package distribute --workspace /tmp/distribute-agent-live \
+  --output /tmp/distribute-agent-live --max-requests 15
+```
+
+```bash
+# Any hosted provider through LiteLLM (needs the "litellm" extra):
 HF_TOKEN=... .venv/bin/python -m distribute_agent live-eval \
   --enable-live-model --model-backend litellm --model-id <provider/model> \
   --package distribute --workspace /tmp/distribute-agent-live \

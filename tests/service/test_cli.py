@@ -12,6 +12,9 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
+
+import distribute_agent.__main__ as cli
 
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
@@ -645,6 +648,162 @@ class ServeCliTests(unittest.TestCase):
         finally:
             first.terminate()
             first.communicate(timeout=20)
+
+
+class LiveModelFactoryTests(unittest.TestCase):
+    """live-eval resolves its model with the serve endpoint's config; no network."""
+
+    @staticmethod
+    def _parse(*arguments):
+        with mock.patch.dict(os.environ, {"MEDIAGEN_PROXY_API_KEY": "proxy-key-test"}):
+            return cli.build_parser().parse_args(
+                ["live-eval", "--enable-live-model", "--package", "p",
+                 "--workspace", "w", *arguments]
+            )
+
+    def _factory_model(self, config):
+        model = cli._model_factory(config)()
+        return model
+
+    def test_inference_client_defaults_match_the_serve_config(self):
+        arguments = self._parse()
+        config = cli._live_model_config(arguments, {})
+        self.assertEqual(
+            config,
+            {
+                "backend": "inference-client",
+                "model_id": cli.DEFAULT_MODEL_ID,
+                "model_base_url": cli.DEFAULT_MODEL_BASE_URL,
+                "api_key_env": cli.DEFAULT_MODEL_API_KEY_ENV,
+            },
+        )
+        self.assertEqual(self._factory_model(config).model_id, cli.DEFAULT_MODEL_BASE_URL)
+
+    def test_flags_override_exported_settings_and_serve_defaults(self):
+        arguments = self._parse(
+            "--model-id", "env-explicit-model", "--model-base-url", "https://alt:8443/v1",
+            "--api-key-env", "TEST_LIVE_KEY",
+        )
+        config = cli._live_model_config(
+            arguments,
+            {
+                "MEDIAGEN_MODEL_ID": "env-model",
+                "MEDIAGEN_MODEL_BASE_URL": "http://env-proxy/v1",
+                "MEDIAGEN_MODEL_API_KEY_ENV": "OTHER_KEY",
+            },
+        )
+        self.assertEqual(config["backend"], "inference-client")
+        self.assertEqual(config["model_id"], "env-explicit-model")
+        self.assertEqual(config["model_base_url"], "https://alt:8443/v1")
+        self.assertEqual(config["api_key_env"], "TEST_LIVE_KEY")
+
+    def test_exported_settings_override_serve_defaults(self):
+        arguments = self._parse()
+        config = cli._live_model_config(
+            arguments,
+            {
+                "MEDIAGEN_MODEL_ID": "env-model",
+                "MEDIAGEN_MODEL_API_KEY_ENV": "OTHER_KEY",
+            },
+        )
+        self.assertEqual(config["model_id"], "env-model")
+        self.assertEqual(config["model_base_url"], cli.DEFAULT_MODEL_BASE_URL)
+        self.assertEqual(config["api_key_env"], "OTHER_KEY")
+
+    def test_empty_base_url_runs_straight_against_hugging_face(self):
+        arguments = self._parse("--model-base-url", "")
+        config = cli._live_model_config(arguments, {})
+        self.assertIsNone(config["model_base_url"])
+        model = self._factory_model(config)
+        self.assertEqual(model.model_id, cli.DEFAULT_MODEL_ID)
+
+    def test_missing_key_names_the_variable(self):
+        arguments = self._parse()
+        config = cli._live_model_config(arguments, {})
+        with mock.patch.dict(os.environ):
+            os.environ.pop("MEDIAGEN_PROXY_API_KEY", None)
+            with self.assertRaisesRegex(SystemExit, "MEDIAGEN_PROXY_API_KEY"):
+                cli._model_factory(config)
+
+    def test_litellm_requires_an_explicit_model_id(self):
+        arguments = cli.build_parser().parse_args(
+            ["live-eval", "--enable-live-model", "--package", "p",
+             "--workspace", "w", "--model-backend", "litellm"]
+        )
+        with self.assertRaisesRegex(SystemExit, "--model-id"):
+            cli._live_model_config(arguments, {})
+
+    def test_litellm_keeps_its_own_contract(self):
+        arguments = self._parse(
+            "--model-backend", "litellm", "--model-id", "openai/gpt-4o-mini"
+        )
+        config = cli._live_model_config(arguments, {})
+        self.assertEqual(
+            config,
+            {
+                "backend": "litellm",
+                "model_id": "openai/gpt-4o-mini",
+                "model_base_url": None,
+                "api_key_env": "HF_TOKEN",
+            },
+        )
+
+    def test_proxy_construction_posts_like_the_serve_endpoint(self):
+        """The wire request matches service/runtime.py: <proxy>/v1/chat/completions."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        captured = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802  (http.server API)
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                captured.update(
+                    {
+                        "path": self.path,
+                        "auth": self.headers.get("Authorization"),
+                        "model": json.loads(body).get("model"),
+                    }
+                )
+                payload = json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {"role": "assistant", "content": "ok"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    }
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            arguments = self._parse(
+                "--model-base-url", f"http://127.0.0.1:{server.server_address[1]}/v1",
+                "--model-id", "wire-model",
+            )
+            config = cli._live_model_config(arguments, {})
+            from smolagents.models import ChatMessage
+
+            with mock.patch.dict(os.environ, {"MEDIAGEN_PROXY_API_KEY": "proxy-key-test"}):
+                model = self._factory_model(config)
+                model.generate([ChatMessage(role="user", content="hi")])
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(captured["path"], "/v1/chat/completions")
+        self.assertEqual(captured["model"], "wire-model")
+        self.assertEqual(captured["auth"], "Bearer proxy-key-test")
 
 
 if __name__ == "__main__":

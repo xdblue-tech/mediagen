@@ -1525,13 +1525,14 @@ class LiveHarnessTests(unittest.TestCase):
     def test_the_live_backend_is_preflighted_before_the_matrix(self):
         from smolagents import LiteLLMModel
 
-        from distribute_agent.__main__ import _model_factory
+        from distribute_agent.__main__ import _live_model_config, _model_factory
 
         arguments = mock.Mock(
             model_backend="litellm",
             model_id="openai/gpt-4o-mini",
             api_key_env="HF_TOKEN",
         )
+        live_config = _live_model_config(arguments)
         with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_test"}, clear=False):
             with mock.patch.object(
                 LiteLLMModel,
@@ -1539,7 +1540,7 @@ class LiveHarnessTests(unittest.TestCase):
                 side_effect=ModuleNotFoundError("Please install 'litellm' extra"),
             ):
                 with self.assertRaises(SystemExit) as caught:
-                    _model_factory(arguments)
+                    _model_factory(live_config)
         self.assertIn("litellm", str(caught.exception))
         self.assertIn("No provider call was made", str(caught.exception))
 

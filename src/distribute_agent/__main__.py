@@ -18,6 +18,7 @@ from .service.config import (
     DEFAULT_MODEL_API_KEY_ENV,
     DEFAULT_MODEL_BASE_URL,
     DEFAULT_MODEL_ID,
+    DEFAULT_MODEL_TIMEOUT_SECONDS,
     DEFAULT_PORT,
 )
 
@@ -63,10 +64,24 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--enable-live-model", action="store_true",
                       help="required: allow calls to a billed model provider")
     live.add_argument("--model-backend", choices=("litellm", "inference-client"),
-                      default="litellm")
-    live.add_argument("--model-id", help="provider model id, for example openai/gpt-4o-mini")
-    live.add_argument("--api-key-env", default="HF_TOKEN",
-                      help="environment variable holding the provider key")
+                      default="inference-client",
+                      help="'litellm' reaches any hosted provider and needs the "
+                           "optional 'litellm' extra; 'inference-client' (default) "
+                           "shares the serve endpoint's planning config")
+    live.add_argument("--model-id", default=None,
+                      help="provider model id; with the inference-client backend "
+                           "defaults to MEDIAGEN_MODEL_ID or the serve default, "
+                           "with litellm it is required")
+    live.add_argument("--model-base-url", default=None,
+                      help="OpenAI-compatible planning proxy for the "
+                           "inference-client backend; defaults to "
+                           "MEDIAGEN_MODEL_BASE_URL or the serve default; an empty "
+                           "string runs straight against Hugging Face instead")
+    live.add_argument("--api-key-env", default=None,
+                      help="environment variable holding the provider key; "
+                           "defaults to MEDIAGEN_MODEL_API_KEY_ENV or "
+                           "MEDIAGEN_PROXY_API_KEY (inference-client) or "
+                           "HF_TOKEN (litellm)")
     live.add_argument("--package", required=True, help="path to the shipped package")
     live.add_argument("--workspace", required=True, help="directory for per-run sandboxes")
     live.add_argument("--output", help="directory for live-eval.json")
@@ -158,11 +173,14 @@ def main(argv=None) -> int:
     if arguments.command == "token":
         return _token(arguments)
     if arguments.command == "live-eval":
+        live_config = (
+            _live_model_config(arguments, _CONFIG_ENVIRONMENT)
+            if arguments.enable_live_model
+            else None
+        )
         report = run_live_eval(
             enable_live_model=arguments.enable_live_model,
-            model_factory=(
-                _model_factory(arguments) if arguments.enable_live_model else None
-            ),
+            model_factory=_model_factory(live_config) if live_config else None,
             package_root=arguments.package,
             workspace_root=arguments.workspace,
             output_dir=arguments.output,
@@ -170,11 +188,20 @@ def main(argv=None) -> int:
             max_steps=arguments.max_steps,
             deadline_seconds=arguments.deadline_seconds,
             max_requests=arguments.max_requests,
-            model_metadata={
-                "backend": arguments.model_backend,
-                "model_id": arguments.model_id or "(not set)",
-                "api_key_env": arguments.api_key_env,
-            },
+            model_metadata=(
+                {
+                    "backend": live_config["backend"],
+                    "model_id": live_config["model_id"],
+                    "model_base_url": live_config["model_base_url"],
+                    "api_key_env": live_config["api_key_env"],
+                }
+                if live_config
+                else {
+                    "backend": arguments.model_backend,
+                    "model_id": arguments.model_id or "(not set)",
+                    "api_key_env": arguments.api_key_env or "(not set)",
+                }
+            ),
         )
         print(json.dumps(report, indent=2))
         if report["status"] == "not-run":
@@ -361,17 +388,55 @@ def _token(arguments) -> int:
     return 0
 
 
-def _model_factory(arguments):
-    model_id = arguments.model_id
-    if not model_id:
-        raise SystemExit("--model-id is required with --enable-live-model")
-    key = os.environ.get(arguments.api_key_env)
+LITELLM_DEFAULT_API_KEY_ENV = "HF_TOKEN"
+
+
+def _live_model_config(arguments, environment=None):
+    """Resolve the live-eval model: flags, then the serve endpoint's settings.
+
+    The inference-client backend shares the serve planning config with the same
+    resolution as ``_model_settings``: service/config.py defaults under
+    MEDIAGEN_MODEL_ID, MEDIAGEN_MODEL_BASE_URL and MEDIAGEN_MODEL_API_KEY_ENV
+    exports. The litellm backend keeps its own contract: an explicit
+    ``--model-id`` and the ``--api-key-env`` variable (default HF_TOKEN).
+    Passing ``--model-base-url ""`` opts out of the served proxy and runs
+    straight against Hugging Face Inference Providers.
+    """
+    if arguments.model_backend == "litellm":
+        if not arguments.model_id:
+            raise SystemExit("--model-id is required with the litellm backend")
+        return {
+            "backend": "litellm",
+            "model_id": arguments.model_id,
+            "model_base_url": None,
+            "api_key_env": arguments.api_key_env or LITELLM_DEFAULT_API_KEY_ENV,
+        }
+    environment = os.environ if environment is None else environment
+    settings = {}
+    for flag, variable, fallback in (
+        ("model_id", MODEL_ID_ENV, DEFAULT_MODEL_ID),
+        ("model_base_url", MODEL_BASE_URL_ENV, DEFAULT_MODEL_BASE_URL),
+        ("api_key_env", MODEL_API_KEY_ENV_ENV, DEFAULT_MODEL_API_KEY_ENV),
+    ):
+        flag_value = getattr(arguments, flag)
+        if flag_value is not None:
+            settings[flag] = flag_value
+        else:
+            settings[flag] = environment.get(variable, "").strip() or fallback
+    settings["model_base_url"] = settings["model_base_url"].strip() or None
+    settings["backend"] = "inference-client"
+    return settings
+
+
+def _model_factory(live_config):
+    model_id = live_config["model_id"]
+    key = os.environ.get(live_config["api_key_env"])
     if not key:
         raise SystemExit(
-            f"{arguments.api_key_env} is not set — export the provider key in the "
+            f"{live_config['api_key_env']} is not set — export the provider key in the "
             "environment; it is never written to artifacts"
         )
-    if arguments.model_backend == "litellm":
+    if live_config["backend"] == "litellm":
         from smolagents import LiteLLMModel
 
         model_class, model_kwargs = LiteLLMModel, {"api_key": key}
@@ -379,10 +444,26 @@ def _model_factory(arguments):
         # huggingface-hub, the only dependency of this backend, ships with base smolagents.
         from smolagents import InferenceClientModel
 
-        model_class, model_kwargs = InferenceClientModel, {"token": key}
+        base_url = live_config["model_base_url"]
+        if base_url:
+            # The serve endpoint's exact construction (service/runtime.py): the
+            # client posts <proxy>/v1/chat/completions, and the request body
+            # carries the planning model id.
+            model_class, model_kwargs = InferenceClientModel, {
+                "model_id": base_url,
+                "model": model_id,
+                "token": key,
+                "timeout": DEFAULT_MODEL_TIMEOUT_SECONDS,
+            }
+        else:
+            model_class, model_kwargs = InferenceClientModel, {
+                "model_id": model_id,
+                "token": key,
+                "timeout": DEFAULT_MODEL_TIMEOUT_SECONDS,
+            }
 
     def factory():
-        return model_class(model_id=model_id, **model_kwargs)
+        return model_class(**model_kwargs)
 
     # Preflight once, before the matrix starts: constructing the model triggers the
     # backend's own dependency import (litellm for LiteLLMModel) but no network call.
@@ -391,7 +472,7 @@ def _model_factory(arguments):
         factory()
     except ModuleNotFoundError as exc:
         raise SystemExit(
-            f"the {arguments.model_backend} backend cannot be constructed: {exc} — "
+            f"the {live_config['backend']} backend cannot be constructed: {exc} — "
             "install it (this project's pyproject extra is 'litellm') and rerun. "
             "No provider call was made"
         ) from exc
