@@ -5,6 +5,18 @@
       "headers": {
         "Authorization": "Bearer ${MEDIAGEN_TOKEN}"
       }
+    },
+    "runpod": {
+      "url": "http://hades.home:3001/mcp/runpod",
+      "headers": {
+        "Authorization": "!echo Bearer $(cat $HOME/.config/mcphub/pi.token)"
+      }
+    },
+    "playwright": {
+      "enabled": true
+    },
+    "coding": {
+      "enabled": true
     }
   }
 }
